@@ -7,8 +7,6 @@ import torchvision.transforms as transforms
 
 
 class NormalizeInverse(transforms.Normalize):
-    # Undo normalization on images
-
     def __init__(self, mean, std):
         mean = torch.as_tensor(mean)
         std = torch.as_tensor(std)
@@ -26,14 +24,6 @@ def create_folder(folder_name):
         None
 
 def save_saliency_map(image, saliency_map, filename):
-    """ 
-    Save saliency map on image.
-    
-    Args:
-        image: Tensor of size (3,H,W)
-        saliency_map: Tensor of size (1,H,W) 
-        filename: string with complete path and file extension
-    """
 
     image = image.data.cpu().numpy()
     saliency_map = saliency_map.data.cpu().numpy()
