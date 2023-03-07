@@ -1,7 +1,6 @@
 import subprocess
 import cv2
 import numpy as np
-
 import torch
 import torchvision.transforms as transforms
 
@@ -17,11 +16,13 @@ class NormalizeInverse(transforms.Normalize):
     def __call__(self, tensor):
         return super(NormalizeInverse, self).__call__(tensor.clone())
     
+
 def create_folder(folder_name):
     try:
         subprocess.call(['mkdir','-p',folder_name])
     except OSError:
         None
+
 
 def save_saliency_map(image, saliency_map, filename):
 

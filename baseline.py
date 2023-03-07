@@ -2,83 +2,82 @@ import os
 import torch
 import torch.nn.functional as F
 from torchvision import datasets, transforms, models
-
 from helpers import *
 
 
-class SmoothGrad():
+def load_data(url):
     """
-    Compute smoothgrad by implementing the SmoothGrad saliency algorithm.
-    Smilkov, Daniel, et al. "Smoothgrad: removing noise by adding noise." 
-    arXiv preprint arXiv:1706.03825 (2017).
+    Load and transform input images at the given url (folder)
     """
-
-    def __init__(self, model, num_samples=100, std_spread=0.15):
-        self.model = model
-        self.num_samples = num_samples
-        self.std_spread = std_spread
-
-    def _getGradients(self, image, target_class=None):
-        """
-        Compute input gradients for an image
-        """
-        image = image.requires_grad_()
-        out = self.model(image)
-        if target_class is None:
-            target_class = out.data.max(1, keepdim=True)[1]
-            target_class = target_class.flatten()
-        # Use the negative log likelihood loss
-        loss = -1. * F.nll_loss(out, target_class, reduction='sum')
-        # Explicitly set the gradients to zero so that we do the parameter update correctly
-        self.model.zero_grad()
-        # Gradients w.r.t. input and features
-        input_gradient = torch.autograd.grad(outputs = loss, inputs = image, only_inputs=True)[0]
-        return input_gradient
-
-    def saliency(self, image, target_class=None):
-        #SmoothGrad saliency
-        # Input is tensor of size (3,H,W); Output is tensor of size (1,H,W) 
-        self.model.eval()
-        # Control the extent to which we spread the std
-        std_dev = self.std_spread * (image.max().item() - image.min().item())
-        cam = torch.zeros_like(image).to(image.device)
-        # add gaussian noise to image multiple times
-        for i in range(self.num_samples):
-            noise = torch.normal(mean = torch.zeros_like(image).to(image.device), std = std_dev)
-            cam += (self._getGradients(image + noise, target_class=target_class)) / self.num_samples
-        return cam.abs().sum(1, keepdim=True)
-    
-
-PATH = os.path.dirname(os.path.abspath('baseline.py')) + '/'
-# Load and transform input images
-sample_loader = torch.utils.data.DataLoader(
-    datasets.ImageFolder(PATH + 'dataset/', transform=transforms.Compose([
+    # The specific numbers used in normalization come from the mean and std of ImageNet.
+    # Here, we are making the hypothesis that our input images are similar to ImageNet images.
+    return torch.utils.data.DataLoader(
+    datasets.ImageFolder(url, transform=transforms.Compose([
                        transforms.Resize((224,224)),
                        transforms.ToTensor(),
                        transforms.Normalize(mean = [0.485, 0.456, 0.406],
-                                        std = [0.229, 0.224, 0.225])
-                   ])),
+                                        std = [0.229, 0.224, 0.225])])),
     batch_size= 5, shuffle=False)
 
-cuda = torch.cuda.is_available()
-device = torch.device("cuda" if cuda else "cpu")
-model = models.resnet18(pretrained=True) # Use the pre-trained resnet model
-model = model.to(device)
 
-unnormalize = NormalizeInverse(mean = [0.485, 0.456, 0.406],
-                           std = [0.229, 0.224, 0.225]) # Used to undo normalization on images
+def get_gradients(model, img):
+    """
+    Compute input gradients for an image
+    """
+    # Apply model to image
+    out = model(img)
+    # Find the predicted class for each input in a batch
+    predicted_label = out.argmax(dim=1)
+    # Use the negative log likelihood loss
+    loss_function = F.nll_loss
+    loss = -1. * loss_function(out, predicted_label, reduction='sum')
+    # Explicitly set the gradients to zero so that we do the parameter update correctly
+    model.zero_grad()
+    # Compute gradients
+    return torch.autograd.grad(outputs=loss, inputs=img, only_inputs=True)[0]
 
+
+def get_saliency(model, img):
+    """
+    Implement the SmoothGrad saliency algorithm to compute smoothed saliency values
+    Input is tensor of size (3,H,W); Output is tensor of size (1,H,W)
+    """
+    # Set the model to evaluation mode during inference
+    model.eval()
+    # Set std spread factor to be 0.15
+    std_dev = 0.15 * (img.max().item() - img.min().item())
+    # Initialize the class activation map (CAM) that highlights regions contributing the most to the predicted class
+    cam = torch.zeros_like(img).to(img.device)
+    # Add Gaussian noise to image multiple times
+    for _ in range(100):
+        noise = torch.normal(mean=torch.zeros_like(img).to(img.device), std=std_dev)
+        cam += (get_gradients(model, img + noise)) / 100
+    # Compute sum of the absolute values of activation across spatial locations 
+    # to ensure both positive and negative activations contribute to the normalization
+    return cam.abs().sum(1, keepdim=True)
+                
 
 if __name__ == "__main__":
-    save_path = PATH + 'results/'
-    create_folder(save_path)
-    for batch_idx, (data, _) in enumerate(sample_loader):
+    # Loading data and saving outputs, code reused from https://github.com/idiap/fullgrad-saliency
+    root = os.path.dirname(os.path.abspath('baseline.py')) + '/'
+    input_path = root + 'dataset/'
+    output_path = root + 'results/'
+    create_folder(output_path)
+    cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if cuda else "cpu")
+    # Use the pre-trained resnet model with the most up-to-date weights
+    model = models.resnet18(weights='IMAGENET1K_V1').to(device)
+    # Undo normalization on images. Again, the numbers come from the mean and std of ImageNet.
+    unnormalize = NormalizeInverse(mean = [0.485, 0.456, 0.406],
+                           std = [0.229, 0.224, 0.225])
+    for batch_idx, (data, _) in enumerate(load_data(input_path)):
+        # Track the operations performed on the tensor and compute the gradients automatically during the backward pass.
         data = data.to(device).requires_grad_()
-        # Compute saliency maps for the input data
-        saliency_map = SmoothGrad(model).saliency(data)
+        # Compute saliency maps for the input image
+        saliency_map = get_saliency(model, data)
         # Save saliency maps
         for i in range(data.size(0)):
-            filename = save_path + str( (batch_idx+1) * (i+1))
+            filename = output_path + str((batch_idx+1) * (i+1))
             image = unnormalize(data[i].cpu())
             save_saliency_map(image, saliency_map[i], filename + '_' + '.jpg') # Add complete path and file extension
-    print('Saliency maps saved in the results folder.')
+    print('Finished generating saliency maps.')
